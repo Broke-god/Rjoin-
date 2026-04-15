@@ -31,7 +31,7 @@ This script monitors multiple Roblox clone apps, detects error/disconnect dialog
    ```
 
 ## Command-Line Options
-- `--game-id`: Target Game/Place ID (default: 123456789)
+- `--game-id`: Target Game/Place ID (optional, launches to main menu if not specified)
 - `--packages`: List of clone package names (default: standard Roblox clones)
 - `--match-threshold`: Visual match sensitivity (0.0-1.0, default: 0.58)
 - `--check-interval`: Seconds between scan cycles (default: 6)

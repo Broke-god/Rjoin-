@@ -26,7 +26,6 @@ import os
 import sys
 import time
 import subprocess
-from datetime import datetime
 from typing import List, Optional, Tuple
 
 import cv2
@@ -40,8 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--game-id",
         type=str,
-        default="123456789",
-        help="Target Game/Place ID (default: 123456789)"
+        default=None,
+        help="Target Game/Place ID (optional, launches to main menu if not specified)"
     )
     parser.add_argument(
         "--packages",
@@ -207,7 +206,7 @@ def load_templates(paths: List[str]) -> List[np.ndarray]:
     return templates
 
 
-def has_error_box(screenshot_path: str, templates: List[np.ndarray]) -> Tuple[bool, Optional[np.ndarray]]:
+def has_error_box(screenshot_path: str, templates: List[np.ndarray], threshold: float) -> Tuple[bool, Optional[np.ndarray]]:
     """
     Grayscale template matching to find the disconnect popup.
     Returns: (is_match_found, annotated_image_data)
@@ -234,7 +233,7 @@ def has_error_box(screenshot_path: str, templates: List[np.ndarray]) -> Tuple[bo
             result  = cv2.matchTemplate(gray_screen, resized, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
-            if max_val >= MATCH_THRESHOLD:
+            if max_val >= threshold:
                 # MATCH FOUND! Calculate center for the circle
                 top_left = max_loc
                 center_x = top_left[0] + nw // 2
@@ -270,11 +269,11 @@ def setup_logging(log_level: str) -> None:
 
 def validate_inputs(args: argparse.Namespace) -> None:
     """Validate command-line arguments."""
-    if args.game_id:
+    if args.game_id and args.game_id.strip():
         try:
             int(args.game_id)
         except ValueError:
-            logging.error("GAME_ID must be a valid integer or empty")
+            logging.error("GAME_ID must be a valid integer")
             sys.exit(1)
     for pkg in args.packages:
         if not pkg.startswith("com."):
@@ -314,7 +313,7 @@ def monitor_packages(
                     logging.warning("Screenshot failed — skipping")
                     continue
 
-                is_error, annotated_img = has_error_box(SCREENSHOT_PATH, templates)
+                is_error, annotated_img = has_error_box(SCREENSHOT_PATH, templates, match_threshold)
                 
                 if is_error and annotated_img is not None:
                     logging.warning(f"ERROR BOX DETECTED — {pkg}")
