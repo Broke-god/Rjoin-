@@ -10,7 +10,6 @@ SETUP
 1. Install dependencies in Termux:
      pkg update
      pkg install python opencv python-numpy
-     pip install pillow
 
 2. Place your 3 reference images in the SAME folder as this script:
      error_template_1.jpg   ← white "Connection error" box
@@ -21,50 +20,92 @@ SETUP
      python roblox_monitor.py
 """
 
+import argparse
+import logging
 import os
 import sys
 import time
 import subprocess
 from datetime import datetime
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
 
 # ─────────────────────── CONFIGURATION ───────────────────────────────────────
 
-# Add your target Game/Place ID here to directly open the game.
-# If you just want to open the main menu, set this to None or ""
-GAME_ID = "123456789"  
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description="Roblox Clone Error Monitor")
+    parser.add_argument(
+        "--game-id",
+        type=str,
+        default="123456789",
+        help="Target Game/Place ID (default: 123456789)"
+    )
+    parser.add_argument(
+        "--packages",
+        nargs="+",
+        default=[
+            "com.roblox.clienv",
+            "com.roblox.clienw",
+            "com.roblox.clienx",
+            "com.roblox.clieny",
+        ],
+        help="Clone package names (default: standard clones)"
+    )
+    parser.add_argument(
+        "--match-threshold",
+        type=float,
+        default=0.58,
+        help="Visual match sensitivity (0.0-1.0, default: 0.58)"
+    )
+    parser.add_argument(
+        "--check-interval",
+        type=int,
+        default=6,
+        help="Seconds between scan cycles (default: 6)"
+    )
+    parser.add_argument(
+        "--cooldown-seconds",
+        type=int,
+        default=50,
+        help="Cooldown after restart (default: 50)"
+    )
+    parser.add_argument(
+        "--switch-wait",
+        type=float,
+        default=4.0,
+        help="Wait after switching app (default: 4.0)"
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Logging level (default: INFO)"
+    )
+    return parser.parse_args()
 
-# Your clone package names
-PACKAGES = [
-    "com.roblox.clienv",
-    "com.roblox.clienw",
-    "com.roblox.clienx",
-    "com.roblox.clieny",
-]
 
-# Template images — place in same folder as this script
-SCRIPT_DIR     = os.path.dirname(os.path.abspath(__file__))
+def check_dependencies() -> None:
+    """Check if required dependencies are installed."""
+    try:
+        import cv2  # noqa: F401
+        import numpy as np  # noqa: F401
+    except ImportError as e:
+        logging.error(f"Missing dependency: {e}")
+        sys.exit(1)
+
+
+# Default template files
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_FILES = [
     os.path.join(SCRIPT_DIR, "error_template_1.jpg"),
     os.path.join(SCRIPT_DIR, "error_template_2.jpg"),
     os.path.join(SCRIPT_DIR, "error_template_3.jpg"),
 ]
 
-# Visual match sensitivity  (0.0–1.0)
-MATCH_THRESHOLD = 0.58
-
-# Seconds between full scan cycles
-CHECK_INTERVAL = 6
-
-# After restarting a clone, ignore it for this long to allow game load
-COOLDOWN_SECONDS = 50
-
-# Seconds to wait after switching an app to foreground before screenshotting
-SWITCH_WAIT = 4.0
-
-# Temp screenshot path (root-writable, readable by Termux after chmod)
+# Temp screenshot path
 SCREENSHOT_PATH = "/data/local/tmp/rbx_check.png"
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -99,7 +140,7 @@ def get_launch_activity(package: str) -> str | None:
     return None
 
 
-def bring_to_foreground(package: str):
+def bring_to_foreground(package: str) -> None:
     """Resume a running package without forcing a new intent state."""
     activity = get_launch_activity(package)
     if activity:
@@ -116,18 +157,18 @@ def take_screenshot() -> bool:
     """Take a full-screen screenshot as root, then make it readable."""
     code, _, err = run_root(f"screencap -p {SCREENSHOT_PATH}")
     if code != 0:
-        print(f"    [WARN] screencap failed: {err.strip()}")
+        logging.warning(f"screencap failed: {err.strip()}")
         return False
     run_root(f"chmod 644 {SCREENSHOT_PATH}")
     return os.path.exists(SCREENSHOT_PATH)
 
 
-def force_stop(package: str):
+def force_stop(package: str) -> None:
     run_root(f"am force-stop {package}")
     time.sleep(1.5)
 
 
-def launch_package(package: str, game_id: str = None):
+def launch_package(package: str, game_id: Optional[str] = None) -> None:
     """Launch / relaunch a package, optionally into a specific game."""
     if game_id and str(game_id).strip() != "":
         cmd = f'am start -a android.intent.action.VIEW -d "roblox://placeId={game_id}" -p {package}'
@@ -151,22 +192,22 @@ def is_running(package: str) -> bool:
 
 # ───────────────────────── TEMPLATE MATCHING ──────────────────────────────────
 
-def load_templates(paths: list) -> list:
+def load_templates(paths: List[str]) -> List[np.ndarray]:
     templates = []
     for p in paths:
         if not os.path.exists(p):
-            print(f"  [WARN] Template not found — skipping: {os.path.basename(p)}")
+            logging.warning(f"Template not found — skipping: {os.path.basename(p)}")
             continue
         img = cv2.imread(p)
         if img is None:
-            print(f"  [WARN] Could not read — skipping: {os.path.basename(p)}")
+            logging.warning(f"Could not read — skipping: {os.path.basename(p)}")
             continue
         templates.append(img)
-        print(f"  [ OK] Loaded: {os.path.basename(p)}")
+        logging.info(f"Loaded: {os.path.basename(p)}")
     return templates
 
 
-def has_error_box(screenshot_path: str, templates: list) -> tuple[bool, np.ndarray | None]:
+def has_error_box(screenshot_path: str, templates: List[np.ndarray]) -> Tuple[bool, Optional[np.ndarray]]:
     """
     Grayscale template matching to find the disconnect popup.
     Returns: (is_match_found, annotated_image_data)
@@ -219,91 +260,129 @@ def has_error_box(screenshot_path: str, templates: list) -> tuple[bool, np.ndarr
 
 # ──────────────────────────────── MAIN ────────────────────────────────────────
 
-def main():
-    print("=" * 54)
-    print("   Roblox Clone Error Monitor  —  Android / Root")
-    print("=" * 54)
+def setup_logging(log_level: str) -> None:
+    """Set up logging configuration."""
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
 
-    print("\n  Checking root access...", end=" ")
-    if not check_root():
-        print("FAILED\n")
-        print("[ERROR] Could not get root. Make sure Termux has su access.")
-        sys.exit(1)
-    print("OK")
 
-    print("\n  Loading templates:")
-    templates = load_templates(TEMPLATE_FILES)
-    if not templates:
-        print("\n[ERROR] No templates loaded. "
-              "Put the 3 jpg files next to this script and retry.")
-        sys.exit(1)
+def validate_inputs(args: argparse.Namespace) -> None:
+    """Validate command-line arguments."""
+    if args.game_id:
+        try:
+            int(args.game_id)
+        except ValueError:
+            logging.error("GAME_ID must be a valid integer or empty")
+            sys.exit(1)
+    for pkg in args.packages:
+        if not pkg.startswith("com."):
+            logging.warning(f"Package {pkg} does not look like a valid Android package name")
 
-    print(f"\n  Packages monitored : {len(PACKAGES)}")
-    print(f"  Target Game ID     : {GAME_ID if GAME_ID else 'None (Main Menu)'}")
-    print(f"  Check interval     : {CHECK_INTERVAL}s")
-    print("\n  Running — Ctrl+C to stop.\n")
-    print("-" * 54)
 
+def monitor_packages(
+    packages: List[str],
+    game_id: Optional[str],
+    templates: List[np.ndarray],
+    match_threshold: float,
+    check_interval: int,
+    cooldown_seconds: int
+) -> None:
+    """Main monitoring loop."""
     cooldowns: dict[str, float] = {}
 
     while True:
         try:
-            for pkg in PACKAGES:
-
+            for pkg in packages:
                 elapsed = time.time() - cooldowns.get(pkg, 0)
-                if elapsed < COOLDOWN_SECONDS:
-                    remaining = int(COOLDOWN_SECONDS - elapsed)
-                    print(f"  [--] {pkg}  (cooldown {remaining}s left)")
+                if elapsed < cooldown_seconds:
+                    remaining = int(cooldown_seconds - elapsed)
+                    logging.info(f"{pkg} (cooldown {remaining}s left)")
                     continue
 
                 if not is_running(pkg):
-                    print(f"  [++] {pkg}  (not running) -> Launching instance...")
-                    launch_package(pkg, GAME_ID)
+                    logging.info(f"{pkg} (not running) -> Launching instance...")
+                    launch_package(pkg, game_id)
                     cooldowns[pkg] = time.time()
                     continue
 
-                print(f"  [>>] {pkg}")
+                logging.info(f"Checking {pkg}")
                 bring_to_foreground(pkg)
 
                 if not take_screenshot():
-                    print(f"       Screenshot failed — skipping")
+                    logging.warning("Screenshot failed — skipping")
                     continue
 
                 is_error, annotated_img = has_error_box(SCREENSHOT_PATH, templates)
                 
                 if is_error and annotated_img is not None:
-                    print(f"\n  [!!!] ERROR BOX DETECTED  ——  {pkg}")
+                    logging.warning(f"ERROR BOX DETECTED — {pkg}")
                     
-                    # --- Save the newly drawn circled image ---
+                    # Save the newly drawn circled image
                     debug_name = f"error_caught_{pkg.split('.')[-1]}_{int(time.time())}.png"
                     local_tmp_img = f"/data/local/tmp/{debug_name}"
                     
-                    # Write the image locally using OpenCV
                     cv2.imwrite(local_tmp_img, annotated_img)
-                    
-                    # Move it to the Downloads folder
                     run_root(f"mv {local_tmp_img} /sdcard/Download/{debug_name}")
-                    print(f"        → Saved circled evidence to Downloads/{debug_name}")
-                    # ------------------------------------------
+                    logging.info(f"Saved circled evidence to Downloads/{debug_name}")
 
-                    print(f"        → Force stopping...")
+                    logging.info("Force stopping...")
                     force_stop(pkg)
-                    print(f"        → Relaunching into Game ID: {GAME_ID}...")
-                    launch_package(pkg, GAME_ID)
+                    logging.info(f"Relaunching into Game ID: {game_id}...")
+                    launch_package(pkg, game_id)
                     cooldowns[pkg] = time.time()
-                    print(f"        → Done. Cooldown started ({COOLDOWN_SECONDS}s).\n")
+                    logging.info(f"Done. Cooldown started ({cooldown_seconds}s).")
                 else:
-                    print(f"       [ ✓] No error box found")
+                    logging.info("No error box found")
 
-            print(f"\n  Cycle done — waiting {CHECK_INTERVAL}s...\n")
-            time.sleep(CHECK_INTERVAL)
+            logging.info(f"Cycle done — waiting {check_interval}s...")
+            time.sleep(check_interval)
 
         except KeyboardInterrupt:
-            print("\n\nStopped by user.")
+            logging.info("Stopped by user.")
             break
         except Exception as exc:
-            print(f"\n[ERR] Unexpected error: {exc}")
-            time.sleep(CHECK_INTERVAL)
+            logging.error(f"Unexpected error: {exc}")
+            time.sleep(check_interval)
+
+
+def main() -> None:
+    """Main entry point."""
+    check_dependencies()
+    args = parse_args()
+    validate_inputs(args)
+    setup_logging(args.log_level)
+
+    logging.info("=" * 54)
+    logging.info("   Roblox Clone Error Monitor  —  Android / Root")
+    logging.info("=" * 54)
+
+    logging.info("Checking root access...")
+    if not check_root():
+        logging.error("Could not get root. Make sure Termux has su access.")
+        sys.exit(1)
+    logging.info("Root access OK")
+
+    logging.info("Loading templates:")
+    templates = load_templates(TEMPLATE_FILES)
+    if not templates:
+        logging.error("No templates loaded. Put the 3 jpg files next to this script and retry.")
+        sys.exit(1)
+
+    logging.info(f"Packages monitored: {len(args.packages)}")
+    logging.info(f"Target Game ID: {args.game_id if args.game_id else 'None (Main Menu)'}")
+    logging.info(f"Check interval: {args.check_interval}s")
+    logging.info("Running — Ctrl+C to stop.")
+
+    monitor_packages(
+        args.packages,
+        args.game_id,
+        templates,
+        args.match_threshold,
+        args.check_interval,
+        args.cooldown_seconds
+    )
 
 
 if __name__ == "__main__":
